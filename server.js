@@ -10,29 +10,32 @@ const DATABRICKS_HOST = process.env.DATABRICKS_HOST || 'your-instance.cloud.data
 const DATABRICKS_HTTP_PATH = process.env.DATABRICKS_HTTP_PATH || '/sql/1.0/warehouses/5f20e2fe1019305b';
 const DATABRICKS_PAT = process.env.AZURE_PAT_DELIVERY_TEST;
 
-// Test Databricks Connection
-async function testDatabricksConnection() {
+// Databricks Query Function
+async function queryDatabricks(query) {
   try {
     if (!DATABRICKS_PAT) {
-      console.error('❌ Error: AZURE_PAT_DELIVERY_TEST environment variable is not set');
-      return false;
+      throw new Error('AZURE_PAT_DELIVERY_TEST environment variable is not set');
     }
 
-    const response = await axios.get(
-      `https://${DATABRICKS_HOST}/api/2.0/sql/warehouses`,
+    const response = await axios.post(
+      `https://${DATABRICKS_HOST}/api/2.0/sql/statements`,
+      {
+        statement: query,
+        warehouse_path: DATABRICKS_HTTP_PATH
+      },
       {
         headers: {
           'Authorization': `Bearer ${DATABRICKS_PAT}`,
           'Content-Type': 'application/json'
-        }
+        },
+        timeout: 60000
       }
     );
 
-    console.log('✅ Databricks Connection Successful');
-    return true;
+    return response.data;
   } catch (error) {
-    console.error('❌ Databricks Connection Failed:', error.message);
-    return false;
+    console.error('❌ Databricks Query Failed:', error.message);
+    throw error;
   }
 }
 
@@ -40,60 +43,92 @@ async function testDatabricksConnection() {
 app.get('/', (req, res) => {
   res.json({
     message: 'Hello World from Azure Databricks App 🚀',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
+    endpoints: {
+      table: '/table',
+      api: '/api/table-data'
+    }
   });
 });
 
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'healthy',
-    timestamp: new Date().toISOString()
-  });
+// HTML Table Viewer
+app.get('/table', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Databricks Table Viewer</title>
+      <style>
+        body { font-family: Arial; background: #f5f5f5; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; }
+        table { width: 100%; border-collapse: collapse; }
+        th { background: #667eea; color: white; padding: 12px; text-align: left; }
+        td { padding: 10px; border-bottom: 1px solid #ddd; }
+        tr:hover { background: #f9f9f9; }
+        .loading { text-align: center; padding: 40px; }
+        .error { color: red; background: #fee; padding: 15px; border-radius: 4px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <h1>📊 Table: tagueri.cdp_example_salesforce.events_nt</h1>
+        <div id="content">
+          <div class="loading">Lade Daten...</div>
+        </div>
+      </div>
+      <script>
+        async function loadData() {
+          try {
+            const res = await fetch('/api/table-data');
+            const data = await res.json();
+            
+            if (data.error) {
+              document.getElementById('content').innerHTML = '<div class="error">Fehler: ' + data.error + '</div>';
+              return;
+            }
+            
+            let html = '<table><thead><tr>';
+            data.columns.forEach(col => html += '<th>' + col + '</th>');
+            html += '</tr></thead><tbody>';
+            
+            data.rows.forEach(row => {
+              html += '<tr>';
+              data.columns.forEach(col => html += '<td>' + (row[col] || '-') + '</td>');
+              html += '</tr>';
+            });
+            
+            html += '</tbody></table>';
+            html += '<p><strong>Zeilen: ' + data.rows.length + '</strong></p>';
+            document.getElementById('content').innerHTML = html;
+          } catch (err) {
+            document.getElementById('content').innerHTML = '<div class="error">Fehler: ' + err.message + '</div>';
+          }
+        }
+        loadData();
+      </script>
+    </body>
+    </html>
+  `);
 });
 
-app.get('/api/databricks-info', (req, res) => {
-  res.json({
-    databricks_host: DATABRICKS_HOST,
-    databricks_http_path: DATABRICKS_HTTP_PATH,
-    pat_configured: !!DATABRICKS_PAT,
-    message: 'Databricks credentials are configured'
-  });
+// API Endpoint
+app.get('/api/table-data', async (req, res) => {
+  try {
+    const result = await queryDatabricks('SELECT * FROM tagueri.cdp_example_salesforce.events_nt LIMIT 100');
+    
+    let columns = [];
+    let rows = [];
+    
+    if (result.result && result.result.data_array) {
+      rows = result.result.data_array;
+      if (result.result.manifest && result.result.manifest.columns) {
+        columns = result.result.manifest.columns.map(col => col.name);
+      }
+    }
+    
+    res.json({ columns, rows, rowCount: rows.length });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({
-    error: 'Internal Server Error',
-    message: err.message
-  });
-});
-
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({
-    error: 'Not Found',
-    path: req.path
-  });
-});
-
-// Start Server
-const server = app.listen(PORT, async () => {
-  console.log(`\n🚀 Server is running on port ${PORT}`);
-  console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  
-  // Test Databricks connection on startup
-  await testDatabricksConnection();
-});
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully...');
-  server.close(() => {
-    console.log('Server closed');
-    process.exit(0);
-  });
-});
-
-module.exports = app;
+app.listen(PORT, () => console.log(`🚀 Server auf http://localhost:${PORT}/table`));
