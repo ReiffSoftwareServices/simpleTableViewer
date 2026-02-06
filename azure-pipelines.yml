@@ -1,0 +1,34 @@
+# Azure Pipelines
+
+# Build and Deployment stages for Node.js application
+
+trigger:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+steps:
+- task: NodeTool@0
+  inputs:
+    versionSpec: '14.x'
+  displayName: 'Install Node.js'
+
+- script: |
+    npm install
+  displayName: 'Install npm packages'
+
+- script: |
+    npm run build
+  displayName: 'Build the project'
+
+- task: AzureWebApp@1
+  inputs:
+    azureSubscription: 'your-azure-subscription'
+    appType: 'webApp'
+    WebAppName: 'your-app-name'
+    package: '$(System.DefaultWorkingDirectory)/**/*.zip'
+    enableCustomDeployment: true
+  displayName: 'Deploy to Azure Web App'
